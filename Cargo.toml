@@ -1,9 +1,16 @@
 [workspace]
-members = ["tenet-domain", "tenet-application", "tenet-mcp", "tenet-cli"]
+members = [
+  "tenet-domain",
+  "tenet-kernel",
+  "tenet-application",
+  "tenet-workspace",
+  "tenet-runner",
+  "tenet-cli",
+]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.7.0"
 edition = "2024"
 description = "Agent-neutral evidence-backed completion authority"
 license = "MIT"
@@ -29,4 +36,6 @@ tokio = { version = "1", features = ["io-std", "rt", "sync"] }
 toml = "1.1.4"
 tenet-application = { path = "tenet-application" }
 tenet-domain = { path = "tenet-domain" }
-tenet-mcp = { path = "tenet-mcp" }
+tenet-kernel = { path = "tenet-kernel" }
+tenet-runner = { path = "tenet-runner" }
+tenet-workspace = { path = "tenet-workspace" }

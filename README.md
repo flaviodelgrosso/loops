@@ -1,95 +1,155 @@
 # Tenet
 
-Tenet is an agent-neutral, evidence-backed completion authority for immutable content.
+Tenet is an agent-neutral, CLI-first completion authority for exact content identities. It decides one claim:
 
-It decides one narrow claim:
+> The exact Candidate identified by `CandidateId C` satisfies the completion contract carried by the exact Authority identified by `AuthorityId A`, under the exact active `AdmissionId`.
 
-> Exact Candidate Snapshot R satisfies the admitted completion contract under exact independently sealed Authority Capsule A.
+Tenet persists immutable objects and derives workflow and completion state. Agent statements, mutable refs, verifier exit codes, and generated integrations do not decide completion.
 
-Tenet knows content, not source-control history. It requires no Git repository, VCS executable, commit graph, branch, or ancestry relation.
-
-## Trust model
-
-- **Authority Capsule A** contains only the sealed specification, verification policy, admitted contract, and authority-snapshot oracle bundles. Its `authorityId` is a Tenet SHA-256 content identity.
-- **Candidate Snapshot R** contains the captured candidate project content. Its `candidateId` is a distinct typed SHA-256 content identity.
-- A coding agent never selects A. After `tenet_authority_seal`, a human reviews the returned exact `authorityId` and explicitly selects it.
-- The gate reads authority material only from A and candidate content only from R. Mutable workspace content is not an input once snapshots exist.
-- Local audit history is observation only; it never establishes completion.
-
-`done` means every admitted obligation reached `contract_satisfied` from admissible current evidence. It does not claim that an oracle is adequate, protected, isolated, or universally correct.
-
-## Workflow
-
-Keep authority construction separate from candidate engineering:
+## CLI
 
 ```text
-tenet init
-  ↓
-inspect specification and tenet_status
-  ↓
-construct verification authority if needed
-  ↓
-tenet_contract_propose
-  ↓
-human explicitly approves exact proposal
-  ↓
-tenet_contract_approve
-  ↓
-tenet_authority_seal → authorityId A
-  ↓
-human explicitly selects A
-  ↓
-candidate engineering
-  ↓
-tenet_candidate_capture → candidateId R
-  ↓
-tenet_gate({ authorityId: A, candidateId: R })
+tenet init [--spec PATH] [--json]
+tenet doctor [--json]
+tenet mcp
+tenet version
 ```
 
-Before `tenet_contract_propose`, explicitly design the positive candidate surface and ensure the policy contains suitable verifier definitions for the evidence contracts required by the specification. `candidate.include` selects exact paths, `path/to/directory/**`, or the explicit root selector `**`; `candidate.exclude` only refines that surface. An empty include is valid after initialization but blocks proposal and sealing. If no suitable verifier exists, inspect the specification, use `tenet_policy_schema` as the authoritative Rust-derived policy format, edit `.tenet/tenet.toml`, create authority-owned oracle assets for any `authority_snapshot` verifier, re-read `tenet_status`, and then propose using the configured verifier IDs. Editing verification policy and creating authority-owned oracle assets are authority-definition work allowed before A is sealed. Do not implement candidate product behavior during this phase. Project-authority verifiers remain valid; weak verification configurations are reported through the verification profile and warnings.
+`tenet init` creates repository-contained state, a starter `SPEC.md` when needed, MCP configuration, and the Tenet Skill. `tenet doctor` validates repository root discovery, `SPEC.md`, repository format, object/blob/ref integrity, the active Admission chain, supported semantic versions, repository-write scope, and integration consistency.
 
-A successful proposal is not an authority capsule. Modifying authority source later requires a new proposal/approval where stale, a new sealed A, and fresh human selection. Candidate implementation present in the workspace is not included in A because sealing captures only the authority surface.
-## Initialization
+## Four-operation protocol
 
-`tenet init` works from an ordinary directory. It initializes that directory as the project root and writes `.tenet/tenet.toml`, a starter specification when necessary, an MCP entry, and a local Tenet Skill. Later operations find the nearest enclosing `.tenet/tenet.toml`; nested initialized roots therefore resolve deterministically to the nearest root.
+The MCP completion-domain surface is exactly:
 
-The admitted policy's `candidate.root` selects the project-relative root under which the positive `candidate.include` surface is resolved. Include selectors define the complete Candidate Snapshot namespace; excludes only prune that namespace. Missing selected paths are allowed so future candidate paths can be declared before implementation. Tenet administration is never captured, and no VCS or ecosystem-specific exclusions are inferred. Candidate capture uses this policy from the explicitly selected authority capsule, never the mutable current policy.
-
-Contract authoring separates semantic claims from evidence mechanisms:
-
-- a requirement states what the specification requires;
-- a verification obligation states one independently falsifiable property Candidate Snapshot R must satisfy;
-- an evidence contract states how Tenet obtains evidence for that property;
-- an oracle assurance criterion concerns the oracle or evidence quality, not candidate behavior.
-
-Separate obligations when acceptance properties can fail independently and that distinction matters to completion or diagnosis. Multiple obligations may share one verifier; decomposition is semantic, not one obligation per verifier, sentence, or specification bullet.
-
-## Snapshot semantics
-
-The local content store captures deterministic directory trees. A snapshot identity binds sorted normalized relative paths, entry kind, regular-file SHA-256 content digests, and executable state. Timestamps, ownership, inode identity, and storage location do not affect it.
-
-Symlinks and special filesystem entries are rejected. Capture never follows an entry outside its root. Objects are integrity-checked against their canonical manifest whenever loaded; missing or corrupt objects are infrastructure failures, never substituted content.
-
-## Verifier policy
-
-`tenet_policy_schema` is the agent-facing authority for the policy format.
-- `project` verifier: command definition comes from sealed A; execution root is Candidate Snapshot R. Tenet passes `argv[0]` directly to the operating system process launcher, so relative paths resolve from verifier `cwd` and ordinary PATH/absolute-path semantics apply. Candidate content can therefore influence a relative executable.
-- `authority_snapshot` verifier: `oracle_path` names an A-owned directory to seal; `argv[0]` directly names a regular executable inside that bundle; `cwd` is relative to the bundle. The candidate is only exposed as `TENET_CANDIDATE_ROOT`.
-
-For example, this is invalid unless the sealed bundle contains an executable file named `sh`:
-
-```toml
-authority = "authority_snapshot"
-oracle_path = ".tenet/oracles"
-argv = ["sh", "verify.sh"]
+```text
+tenet_context
+tenet_authority_submit
+tenet_requirement_check
+tenet_verify
 ```
 
-Tenet never treats that configuration as an implicit request to use a host shell.
+### `tenet_context`
 
-Before proposal and approval, authority-snapshot bundles are checked in the mutable workspace. Sealing repeats validation over the exact captured authority and rejects machine-actionable structural failures such as `oracle_bundle_missing`, `oracle_bundle_not_directory`, `oracle_executable_missing`, `oracle_executable_not_file`, `oracle_executable_not_executable`, `oracle_cwd_missing`, and `oracle_cwd_not_directory`.
+Call this first. It derives, rather than persists:
 
-## Evidence
+- phase;
+- active `AdmissionId`, `AuthorityId`, and `CompletionPolicyId`;
+- current `CandidateId` when available;
+- Requirement-check status;
+- the next action.
 
-Every verifier observation binds the exact `authorityId`, `candidateId`, authority policy/specification/contract digests, obligation, verifier, effect, validity, provenance, and primary oracle identity.
+Supported phases are `SPEC_REQUIRED`, `AUTHORITY_REQUIRED`, `AUTHORITY_RECONCILIATION`, `AUTHORITY_CLARIFICATION`, `AUTHORITY_ADMISSION`, `AUTHORITY_STALE`, `INCOMPATIBLE`, `IMPLEMENTATION`, and `COMPLETED`.
 
-Project identities bind verifier ID, exact candidate ID, and definition digest. Authority-snapshot identities bind verifier ID, exact authority ID, bundle content ID, executable content ID, and definition digest. Evidence from another `(A, R)` pair is stale. Contradiction overrides support; missing, invalid, stale, untrusted, or inconclusive evidence cannot authorize `done`.
+`COMPLETED` requires a successful Final Evaluation bound to the active Admission and Authority, kernel state `satisfied`, and a freshly captured current Candidate equal to the Evaluation Candidate.
+
+### `tenet_authority_submit`
+
+Submit one exact lifecycle stage:
+
+```text
+PROPOSAL → RECONCILIATION → CLARIFICATION (when needed) → ADMISSION
+```
+
+A Proposal captures the specification, `CompletionContractV1`, policy, and authority-owned verifier material into an immutable Authority. Reconciliation binds one exact Proposal. Clarification records information without admitting anything. Admission binds the exact Proposal, Reconciliation, and Authority. A ref has no authority independent of the referenced immutable object and validated chain.
+
+Example request shape:
+
+```json
+{
+  "submission": {
+    "stage": "ADMISSION",
+    "proposalId": "sha256:…",
+    "reconciliationId": "sha256:…",
+    "authorityId": "sha256:…"
+  }
+}
+```
+
+### `tenet_requirement_check`
+
+A Requirement check:
+
+1. loads the active Admission and derives its Authority;
+2. captures current Candidate `C`;
+3. runs every verifier for one Requirement;
+4. gives every verifier a fresh materialization of `C` and fresh scratch directory;
+5. persists one Requirement-scoped Evaluation;
+6. derives the Requirement result in the kernel;
+7. updates the Requirement ref.
+
+This evidence is Candidate-specific development feedback. It never becomes Final evidence and this operation cannot return protocol-level `DONE`.
+
+### `tenet_verify`
+
+Final verification:
+
+1. loads the exact active Admission and Authority;
+2. requires supported `CompletionPolicyV1` and Runner/Candidate semantics;
+3. captures `Cfinal` once;
+4. reruns every required verifier, each against a fresh materialization of `Cfinal`;
+5. persists one Final Evaluation containing the exact subject-bound run set;
+6. derives all Criteria, Requirements, and the Authority outcome in the kernel.
+
+Only `tenet_verify` can return `DONE`. A successful response identifies `AdmissionId`, `AuthorityId`, `CandidateId`, and `EvaluationId`. The successful Final `EvaluationId` is the `LOCAL_V1` receipt identity; there is no separate receipt object.
+
+After a successful Evaluation for `C1`, Tenet captures the working tree again. If it is now `C2`, Tenet preserves the successful historical Evaluation for `C1` but returns `INCONCLUSIVE`, reason `CANDIDATE_CHANGED_DURING_VERIFICATION`, and both Candidate identities. Evidence for `C1` is never implied to cover `C2`.
+
+## Persistence
+
+```text
+.tenet/
+├── format
+├── .gitignore
+├── objects/
+├── blobs/
+├── refs/
+│   ├── proposal
+│   ├── reconciliation
+│   ├── active-admission
+│   ├── final
+│   └── requirements/
+├── tmp/
+└── lock
+```
+
+Objects and blobs are addressed by SHA-256 content identity. Refs are mutable navigation pointers only. `.tenet/tmp` and `.tenet/lock` are disposable; workflow phase is not stored.
+
+`tenet:candidate-semantics:v1` identifies a sorted manifest of normalized repository-relative regular-file paths, content IDs, and executable bits. `.tenet/**` and repository metadata are excluded from Candidate capture. Missing, corrupt, noncanonical, unknown-version, or unknown-semantics content fails closed.
+
+## Completion and evidence policy
+
+`CompletionPolicyV1` requires the exact verifier set for the Evaluation scope. Every run binds exact Admission-derived Authority and Candidate subjects. Duplicate, missing, extra, cross-Authority, and cross-Candidate runs are rejected. Assurance and evidence-control requirements participate in every Criterion result. Candidate-controlled verification is admissible only when the Authority contract explicitly permits it.
+
+The local runner uses structured argv, typed Candidate/Authority/scratch paths, explicit environment inheritance, timeouts, bounded output, `RunnerSemanticsV1`, and `LOCAL_V1`. It invokes no implicit shell.
+
+## Trust boundaries
+
+These distinctions are mandatory:
+
+- **`LOCAL_V1` ≠ same-user tamper resistance.** A same-user process can affect local execution; `LOCAL_V1` makes no stronger claim.
+- **`AuthorityBound` ≠ independent authorship.** Binding verifier material to Authority identifies content; it does not prove who wrote it.
+- **fresh materialization ≠ sandboxing.** Each verifier gets a pristine view, not an isolation or containment guarantee.
+- **content addressing ≠ writer authentication.** A digest identifies bytes; it does not authenticate their producer.
+- **MCP user input ≠ cryptographic human identity.** Admission is an explicit workflow boundary, not a signature scheme.
+- **verifier `Pass` ≠ task completion.** Only deterministic kernel evaluation of the full admitted Final Evaluation can yield `DONE`.
+
+## Architecture
+
+The workspace has exactly six crates:
+
+- `tenet-domain`: semantic types and errors;
+- `tenet-kernel`: pure identity, admission, policy, phase, and completion derivation;
+- `tenet-application`: protocol use cases and infrastructure ports;
+- `tenet-workspace`: repository-contained persistence and materialization;
+- `tenet-runner`: process execution and provenance;
+- `tenet-cli`: CLI and MCP composition root.
+
+Dependency direction is enforced by tests: `domain ← kernel ← application`, with `workspace` and `runner` implementing application ports and `cli` composing them.
+
+## Development
+
+```bash
+make ci
+```
+
+This checks formatting, compilation, Clippy with warnings denied, and all deterministic offline tests.

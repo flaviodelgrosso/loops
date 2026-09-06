@@ -1,6 +1,7 @@
 mod cli;
+mod mcp;
 
-use std::process::ExitCode;
+use std::{process::ExitCode, sync::Arc};
 
 use anyhow::Result;
 use clap::Parser;
@@ -23,9 +24,14 @@ fn main() -> ExitCode {
 
 fn run_command(cli: Cli) -> Result<()> {
   let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
+  let tenet = Tenet::new(
+    cwd.clone(),
+    Arc::new(tenet_workspace::LocalWorkspace),
+    Arc::new(tenet_runner::LocalProcessRunner),
+  );
   match cli.command {
     Command::Init { spec, json } => {
-      let result = Tenet::new(cwd).initialize(&InitializeRequest { spec_path: spec })?;
+      let result = tenet.initialize(&InitializeRequest { spec_path: spec })?;
       if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
       } else {
@@ -34,12 +40,35 @@ fn run_command(cli: Cli) -> Result<()> {
           "specification: {} ({})",
           result.spec_path, result.spec_digest
         );
-        println!("contract: {:?}", result.contract_state);
         println!("skill: {}", result.skill_path);
       }
       Ok(())
     }
-    Command::Mcp => tenet_mcp::run(cwd),
+    Command::Doctor { json } => {
+      let result = tenet.doctor()?;
+      if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+      } else {
+        for check in &result.checks {
+          println!(
+            "{}: {} — {}",
+            if check.passed { "PASS" } else { "FAIL" },
+            check.name,
+            check.detail
+          );
+        }
+      }
+      if result.healthy {
+        Ok(())
+      } else {
+        Err(TenetError::new("doctor_failed", "one or more doctor checks failed").into())
+      }
+    }
+    Command::Mcp => mcp::run(cwd),
+    Command::Version => {
+      println!("tenet {}", env!("CARGO_PKG_VERSION"));
+      Ok(())
+    }
   }
 }
 

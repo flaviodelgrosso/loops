@@ -2,136 +2,129 @@
 
 ## Product boundary
 
-Tenet is an agent-neutral, CLI-first completion authority for exact Git revisions.
+Tenet is an agent-neutral, CLI-first completion authority for exact content identities.
 
-The coding agent owns engineering: investigation, planning, editing, testing, commits, and responses to blockers. Tenet owns:
+The coding agent owns investigation, planning, editing, tests, and blocker responses. Tenet owns immutable authority state, admitted contract semantics, verifier observations and provenance, Candidate capture, and deterministic completion derivation.
 
-- the trusted authority snapshot;
-- admitted contract semantics;
-- evidence semantics and provenance;
-- exact-revision verifier execution;
-- deterministic completion derivation.
+No agent statement, model output, generated Skill, mutable ref, or verifier exit code is itself a completion decision. Only `tenet_verify` may return protocol-level `DONE`, derived by the kernel from one Final Evaluation.
 
-Tenet does not need to know which coding agent produced a candidate. No agent statement, model output, generated Skill, or verifier exit code is itself a completion decision. `DONE` is derived only by Tenet's deterministic domain rules from admitted evidence.
+## Final protocol
 
-## Authority and candidate revisions
-
-Final gating always has two explicit Git identities:
+Expose exactly four completion-domain MCP operations:
 
 ```text
-authority revision A   defines what must be true
-candidate revision R   contains the software being judged
+tenet_context
+tenet_authority_submit
+tenet_requirement_check
+tenet_verify
 ```
 
-Both identities must resolve to full immutable commit IDs. The caller supplies A as trusted context; candidate-controlled files and local audit state must never select it. A must be an ancestor of R.
+The initial CLI surface is exactly `init`, `doctor`, `mcp`, and `version`. Do not reintroduce public propose/approve/seal/select/capture/gate workflows.
 
-Never make the candidate revision the source of the authority definition used to judge itself.
+`tenet_context` derives phase from persisted facts. Never persist workflow phase. `COMPLETED` requires a successful Final Evaluation for the active Admission and Authority whose Candidate equals a fresh current capture.
 
-The final gate loads all completion control-plane inputs from A:
+`tenet_authority_submit` implements `PROPOSAL`, `RECONCILIATION`, `CLARIFICATION`, and `ADMISSION`. Every transition binds exact identities. Clarification never admits. Admission validates the complete exact chain.
 
-- `.tenet/tenet.toml`;
-- `.tenet/contract.json`;
-- the specification at the authority policy's `spec_path`.
+`tenet_requirement_check` captures one Candidate, reruns all verifiers for one Requirement using a fresh Candidate view per verifier, persists a Requirement-scoped Evaluation, and updates its ref. It cannot establish terminal completion.
 
-Verifier definitions come from A but execute in a detached materialization of R. If R changes any authority-owned path, gating fails closed with `authority_surface_changed`. An intentional specification, contract, or policy change requires operator admission in a new commit, and that commit becomes the next authority revision.
+`tenet_verify` captures the final Candidate once, reruns every required verifier with a fresh Candidate view per verifier, persists one Final Evaluation, and delegates all completion semantics to the kernel. Requirement-check runs are never promoted. A successful Final `EvaluationId` is the `LOCAL_V1` receipt identity; do not add another receipt type.
 
-Use Git's own commit and ancestry operations. Do not introduce another repository identity or commit-graph model.
+After a successful Final Evaluation, recapture current content. If the Candidate changed, preserve the historical Evaluation but return `INCONCLUSIVE` with `CANDIDATE_CHANGED_DURING_VERIFICATION`, the verified Candidate, and the current Candidate. Never apply historical evidence to the new state.
 
-## Admission boundary
+## Authority and Candidate identities
 
-A contract proposal is not an admitted contract. A coding agent may construct and submit a deterministic proposal, but operator admission remains a separate workflow step.
+Authority and Candidate are distinct typed, content-addressed identities. The active Authority is derived only by loading `.tenet/refs/active-admission` and validating the referenced immutable Admission, Proposal, Reconciliation, Authority, and SpecSnapshot chain.
 
-Under the same-user threat model, the exact authority revision selected by the operator or CI is trusted repository control state. `.tenet/contract.json` at A is canonical for that snapshot. Proposal and contract digests provide identity, reproducibility, and stale-state detection; they are not authentication.
+A Proposal is not Admission. A mutable ref has no authority independent of its referenced immutable object. Reconciliation for one Proposal cannot authorize another. Admission for one Authority cannot authorize another.
 
-This is a domain and workflow boundary, not a security sandbox against a deliberately malicious process running as the same OS user. Do not add passwords, HMACs, keychains, signatures, controller secrets, privileged services, or mandatory containers to imply otherwise.
+Candidate capture uses policy from the admitted immutable Authority, never live mutable policy. `tenet:candidate-semantics:v1` and all Tenet-owned format versions remain version `1` during the unreleased MVP. Unknown versions and semantics fail closed; do not add migrations or compatibility branches.
 
 ## Evidence and completion
 
-Evidence produced by a final gate must bind:
+Every `VerifierRun` binds exact Authority and Candidate subjects, captured observation, execution context, Runner semantics, assurance, and provenance. Final Evaluation contains exactly one run for every required verifier and no duplicates or extras.
 
-- authority revision A;
-- candidate revision R;
-- specification, contract, and policy digests from A;
-- obligation ID;
-- verifier ID;
-- captured observation, effect, validity, authority, and provenance.
+Completion must fail closed for missing, stale, cross-subject, duplicate, inadmissible, contradictory, inconclusive, infrastructure-failed, or unknown-semantic evidence. Assurance requirements participate in completion. `LOCAL_V1` cannot satisfy `Protected`.
 
-Evidence from another authority or candidate pair is stale for the current gate. Local `.tenet/state.json` is disposable audit history and never defines completion.
+Candidate-controlled evidence is admissible only when explicitly permitted by the Authority's CompletionContract. Verifier definitions come from immutable Authority, while Candidate inputs come from the exact captured Candidate.
 
-Keep implementation state distinct from verification state. Apparent implementation is not verification. Previous evidence is an observation, not mutable truth; preserve contradictory observations and let contradiction block completion.
+## Trust distinctions
 
-Fail closed. Missing, stale, invalid, inadmissible, contradictory, or unverifiable evidence must not become satisfied. Infrastructure failure remains distinct from a verifier contradiction or inconclusive result. Every required obligation must reach `contract_satisfied` before `DONE`.
+Never collapse these boundaries:
 
-## Claim-to-oracle honesty
+- `LOCAL_V1` is not same-user tamper resistance.
+- `AuthorityBound` is not independent authorship.
+- fresh materialization is not sandboxing.
+- content addressing is not writer authentication.
+- MCP user input is not cryptographic human identity.
+- verifier `Pass` is not task completion.
 
-The only currently executable verifier authority is a Tenet-observed project verifier. Do not add a `protected`, external, or human authority label without a real producer and an independently established boundary matching that claim.
+Do not add passwords, HMACs, keychains, signatures, privileged services, or mandatory containers to imply guarantees the current same-user local boundary does not provide.
 
-A project verifier proves only that the admitted project check produced the observed result against R. Candidate-controlled project code may influence that check. Do not describe an ordinary local process execution as protected, isolated, or resistant to candidate-controlled oracle manipulation.
+## Persistence
 
-Agent-reported commands and assertions may aid engineering, but they are not admitted final-gate evidence. Executing an agent-proposed command does not upgrade the semantic claim behind it.
+Runtime state is repository-contained:
+
+```text
+.tenet/
+├── format
+├── .gitignore
+├── objects/
+├── blobs/
+├── refs/
+│   ├── proposal
+│   ├── reconciliation
+│   ├── active-admission
+│   ├── final
+│   └── requirements/
+├── tmp/
+└── lock
+```
+
+Objects and blobs are immutable and content-addressed. Refs are mutable navigation only. All writes must remain beneath the repository root and reject symlink/path escape. Phase is derived, never stored.
+
+`tenet doctor` validates repository root, `SPEC.md`, format, object/blob/ref integrity, active Admission chain, supported semantic versions, repository-write scope, and integration consistency.
 
 ## Domain and validation
 
-Rust domain types are the source of truth. Derive serialization and JSON Schema from those types where practical. Keep validation layers distinct:
+Rust domain types are the source of truth. Derive serialization and JSON Schema where practical. Keep layers distinct:
 
 ```text
-syntax -> schema/Serde -> domain invariants -> repository/runtime invariants
+syntax → schema/Serde → domain invariants → repository/runtime invariants
 ```
 
-Use semantic ID newtypes when identity confusion matters. Use `thiserror` for domain errors callers distinguish and `anyhow` at CLI and I/O boundaries. Avoid `unwrap` and `expect` in production code.
+Use semantic ID newtypes where identity confusion matters. Use `thiserror` for distinguishable domain errors and `anyhow` at CLI/I/O boundaries. Avoid `unwrap` and `expect` in production code.
 
-Breaking changes are allowed during the MVP when they strengthen or simplify the architecture. Update every in-repository caller, test, example, fixture, and active document in the same change. Remove obsolete variants and compatibility paths rather than maintaining competing designs.
+Breaking changes are allowed during MVP. Make clean cutovers: update every caller, test, fixture, generated integration, and active document; remove obsolete variants and competing paths. All Tenet-owned schema and format versions remain `1` until public release.
 
-## MVP versioning policy
+## Six-crate architecture
 
-Tenet is unreleased MVP software. Until the first public release establishes a compatibility boundary, all Tenet-owned schema and format versions remain `1`.
+The workspace contains exactly:
 
-Do not increment a Tenet-owned version because of a breaking change made during MVP development.
+- `tenet-domain`: semantic vocabulary only;
+- `tenet-kernel`: pure deterministic identity, admission, evidence, completion, and phase semantics; depends only on domain;
+- `tenet-application`: use cases and repository/runner ports; no filesystem, process, or persistence work;
+- `tenet-workspace`: repository, object/blob/ref persistence, capture, and materialization;
+- `tenet-runner`: structured process execution, timeout, bounded output, and provenance;
+- `tenet-cli`: CLI and MCP composition root.
 
-This applies to current Tenet-owned persisted and serialized formats, including contract, proposal, policy, evidence, state, protocol-facing schema identifiers, fixtures, examples, and equivalent version markers where the value represents a Tenet format.
+Dependency direction is `domain ← kernel ← application`; workspace and runner implement application ports and never depend on each other; CLI composes all layers. Delivery code contains no completion logic.
 
-During the unreleased MVP:
+Prefer existing files and direct primitives. Do not add provider integrations, model runtimes, plugin systems, databases, generic rule engines, or speculative traits. Structured verifier commands use explicit argv, cwd, environment, timeout, and bounded output without an implicit shell.
 
-- breaking changes are explicitly allowed without a version increment;
-- every current Tenet-owned schema or format version must remain `1`;
-- the current repository state defines the only supported form of each format;
-- earlier unreleased development variants do not require backward compatibility;
-- do not add migrations or compatibility branches for obsolete unreleased variants;
-- remove obsolete structures and update all callers, tests, fixtures, generated schemas, and documentation in the same change;
-- never introduce version `2` or higher in anticipation of future compatibility needs.
+## Testing
 
-A version increment becomes appropriate only after a public release has established a format that Tenet intentionally continues to recognize or distinguish from a later incompatible format.
+Architectural changes require deterministic offline adversarial tests. Preserve coverage for:
 
-Do not apply this rule to versions owned by external protocols, dependencies, standards, or libraries. Their versions must follow the requirements of those external systems.
-
-## Minimal architecture
-
-The project intentionally uses one Cargo workspace with four crates:
-
-- `tenet-domain` contains contract validation, evidence types, and deterministic completion derivation;
-- `tenet-application` contains repository initialization, Git object reads, candidate materialization, verifier execution, and audit persistence;
-- `tenet-mcp` exposes the typed application interface over stdio MCP;
-- `tenet-cli` contains the `tenet` binary and CLI rendering.
-
-Prefer existing files and direct Git commands. Do not introduce provider integrations, model runtimes, general plugin systems, databases, generic rule engines, or speculative traits and frameworks. Add a dependency only for a concrete capability the existing stack cannot express cleanly.
-
-Structured verifier commands use explicit argv, cwd, environment, timeout, and bounded output. Avoid shell interpretation where direct process execution is possible.
-
-## Testing expectations
-
-Architectural changes require adversarial tests for their invariants. Important cases include:
-
-- candidate policy, contract, or specification mutation cannot produce `DONE`;
-- a non-ancestor authority fails closed;
-- verifier definitions come from A and execute against R;
-- evidence from `(A1, R)` cannot satisfy `(A2, R)`;
-- untrusted agent evidence never upgrades an obligation;
-- contradiction overrides support;
-- missing evidence remains blocking;
-- a fresh clone gates exact A and R without historical state or credentials;
-- unsupported authority labels fail deserialization.
-
-Tests must be deterministic and offline. They must not require a coding agent, model provider, API key, keychain, network service, or mandatory sandbox platform.
+- producer assertions cannot create `DONE`;
+- candidate-controlled verifier trust requires explicit Authority policy;
+- evidence cannot transfer across Candidate or Authority identities;
+- reconciliation and admission cannot transfer across identities;
+- missing or duplicate runs cannot hide missing evidence;
+- `LOCAL_V1` cannot satisfy `Protected`;
+- every verifier gets a fresh Candidate view;
+- mutation during final verification cannot produce `DONE` for the new state;
+- unknown semantic versions fail closed;
+- CLI and MCP cannot redefine kernel completion semantics.
 
 Before completion, run:
 
@@ -139,15 +132,13 @@ Before completion, run:
 make ci
 ```
 
-This checks formatting, the package, Clippy with warnings denied, and all tests.
+This checks formatting, compilation, Clippy with warnings denied, and all tests.
 
 ## Working style
 
-1. Inspect the relevant domain types, gate flow, and callers before editing.
-2. Preserve the authority/candidate split at every interface and persistence boundary.
-3. Reuse established patterns and Git primitives; keep the change materially small.
+1. Inspect domain types, kernel semantics, application flow, adapters, and callers before editing.
+2. Preserve the Admission/Authority/Candidate/Evaluation identity split at every interface.
+3. Reuse established patterns; keep changes materially small.
 4. Update all affected callers and tests in one clean cutover.
-5. Verify the exact changed behavior with focused adversarial tests, then run full CI.
-6. Report any remaining unverifiable invariant explicitly; never weaken completion semantics to obtain a green result.
-
-> Coding agents perform engineering. Trusted authority revision A defines the contract. Tenet observes candidate revision R and derives `DONE(A, R)`.
+5. Verify focused adversarial behavior, then run full CI.
+6. Report any unverifiable invariant; never weaken completion semantics to obtain green output.

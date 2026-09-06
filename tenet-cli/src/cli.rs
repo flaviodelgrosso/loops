@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
   name = "tenet",
-  about = "Evidence-backed completion authority for immutable content"
+  about = "Completion authority for exact admitted Authority and Candidate identities"
 )]
 pub struct Cli {
   #[arg(long, global = true, value_name = "DIR")]
@@ -16,20 +16,29 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-  /// Initialize a Tenet project policy and workflow instructions.
+  /// Initialize repository-contained Tenet state and integrations.
   Init {
     #[arg(long, value_name = "PATH")]
     spec: Option<PathBuf>,
     #[arg(long)]
     json: bool,
   },
-  /// Run the local Model Context Protocol server over standard input and output.
-  #[command(hide = true)]
+  /// Validate repository, semantic, integrity, and integration invariants.
+  Doctor {
+    #[arg(long)]
+    json: bool,
+  },
+  /// Run the four-operation Model Context Protocol server over stdio.
   Mcp,
+  /// Print the Tenet executable version.
+  Version,
 }
 
 impl Command {
   pub(crate) fn json_requested(&self) -> bool {
-    matches!(self, Self::Init { json: true, .. })
+    matches!(
+      self,
+      Self::Init { json: true, .. } | Self::Doctor { json: true }
+    )
   }
 }

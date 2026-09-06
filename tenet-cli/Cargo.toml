@@ -12,14 +12,19 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tenet-application.workspace = true
-tenet-mcp.workspace = true
+tenet-domain.workspace = true
+tenet-runner.workspace = true
+tenet-workspace.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
-serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 toml.workspace = true
 tenet-domain.workspace = true
+tenet-kernel.workspace = true

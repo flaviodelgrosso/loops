@@ -1,0 +1,56 @@
+[
+  {
+    "name": "local pass",
+    "assuranceRequirement": "local_or_stronger",
+    "profile": "LOCAL_V1",
+    "exitCode": 0,
+    "timedOut": false,
+    "expectedState": "satisfied",
+    "expectedVerdict": "DONE"
+  },
+  {
+    "name": "protected pass",
+    "assuranceRequirement": "protected",
+    "profile": "PROTECTED_V1",
+    "exitCode": 0,
+    "timedOut": false,
+    "expectedState": "satisfied",
+    "expectedVerdict": "DONE"
+  },
+  {
+    "name": "contradiction overrides success",
+    "assuranceRequirement": "local_or_stronger",
+    "profile": "LOCAL_V1",
+    "exitCode": 1,
+    "timedOut": false,
+    "expectedState": "contradicted",
+    "expectedVerdict": "NOT_DONE"
+  },
+  {
+    "name": "explicit inconclusive",
+    "assuranceRequirement": "local_or_stronger",
+    "profile": "LOCAL_V1",
+    "exitCode": 125,
+    "timedOut": false,
+    "expectedState": "inconclusive",
+    "expectedVerdict": "INCONCLUSIVE"
+  },
+  {
+    "name": "timeout is infrastructure error",
+    "assuranceRequirement": "local_or_stronger",
+    "profile": "LOCAL_V1",
+    "exitCode": null,
+    "timedOut": true,
+    "expectedState": "infrastructure_error",
+    "expectedVerdict": "INFRASTRUCTURE_ERROR"
+  },
+  {
+    "name": "local cannot satisfy protected",
+    "assuranceRequirement": "protected",
+    "profile": "LOCAL_V1",
+    "exitCode": 0,
+    "timedOut": false,
+    "expectedState": "inadmissible_evidence",
+    "expectedVerdict": "INCONCLUSIVE"
+  }
+]

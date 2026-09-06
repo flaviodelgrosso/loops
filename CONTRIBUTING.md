@@ -1,6 +1,6 @@
 # Contributing to tenet
 
-Thank you for helping improve `tenet`. Contributions that test its assumptions are especially valuable: adversarial contract cases, deterministic verification, evidence validity, exact authority/candidate snapshot binding, documentation, and negative results.
+Thank you for helping improve `tenet`. Contributions that test its assumptions are especially valuable: exact Admission/Authority/Candidate/Evaluation binding, deterministic verification, evidence-control and assurance policy, repository integrity, documentation, and negative results.
 
 Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
@@ -9,7 +9,7 @@ Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 - Search existing issues and pull requests before opening a new one.
 - For a substantial change, open an issue first so the scope and design can be discussed.
 - Keep changes focused. Separate unrelated fixes into separate pull requests.
-- Do not include secrets, credentials, generated local audit state, or unrelated `.tenet/` artifacts in commits.
+- Do not include secrets, credentials, transient `.tenet/tmp` or `.tenet/lock` data, or unrelated Tenet artifacts in commits.
 
 ## Development setup
 
@@ -46,7 +46,7 @@ If you change Rust source, run `make fmt` and include only the formatting change
 
 1. Create a branch from the current default branch.
 2. Read the relevant code, tests, README sections, and completion-authority requirements before changing behavior.
-3. Preserve deterministic completion derivation, explicit authority/candidate snapshot binding, authority-surface immutability, and fail-closed evidence semantics.
+3. Preserve deterministic kernel completion derivation, exact Admission/Authority/Candidate/Evaluation binding, immutable content integrity, fresh verifier materialization, and fail-closed semantics.
 4. Add or update tests when a change introduces or alters observable behavior.
 5. Update documentation and examples when commands, configuration, or user-visible behavior changes.
 6. Run the applicable checks, preferably `make ci`.
