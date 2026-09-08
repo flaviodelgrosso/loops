@@ -1,6 +1,7 @@
 use std::{
   fs,
   path::{Path, PathBuf},
+  process::Command as ProcessCommand,
   sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -42,6 +43,7 @@ struct RecordingRunner {
   observed: Mutex<Vec<String>>,
   mutate_project: Option<PathBuf>,
   mutate_on_call: Option<usize>,
+  mutate_view: bool,
 }
 
 impl VerifierRunner for RecordingRunner {
@@ -50,7 +52,9 @@ impl VerifierRunner for RecordingRunner {
     let candidate_file = request.candidate_root.join("candidate.txt");
     let content = fs::read_to_string(&candidate_file)?;
     self.observed.lock().unwrap().push(content);
-    fs::write(candidate_file, "contaminated materialization")?;
+    if self.mutate_view {
+      fs::write(candidate_file, "contaminated materialization")?;
+    }
     if self.mutate_on_call == Some(call)
       && let Some(root) = &self.mutate_project
     {
@@ -86,6 +90,7 @@ impl VerifierRunner for RecordingRunner {
         platform: context.platform.clone(),
         resolved_program: context.resolved_program.clone(),
         resolved_program_digest: None,
+        oracle_identity: request.oracle_identity.clone(),
         execution_environment_identity: ExecutionEnvironmentIdentity(format!("call-{call}")),
       },
       context,
@@ -108,7 +113,7 @@ impl VerifierRunner for ErrorRunner {
 struct InconsistentRunner;
 
 impl VerifierRunner for InconsistentRunner {
-  fn run(&self, _: &VerifierRun<'_>) -> anyhow::Result<ExecutedVerifier> {
+  fn run(&self, request: &VerifierRun<'_>) -> anyhow::Result<ExecutedVerifier> {
     let context = tenet_domain::algebra::ExecutionContext {
       assurance: AssuranceProfileId(LOCAL_V1.into()),
       runner_semantics: RunnerSemanticsId(RUNNER_SEMANTICS_V1.into()),
@@ -136,6 +141,7 @@ impl VerifierRunner for InconsistentRunner {
         platform: context.platform.clone(),
         resolved_program: None,
         resolved_program_digest: None,
+        oracle_identity: request.oracle_identity.clone(),
         execution_environment_identity: ExecutionEnvironmentIdentity("inconsistent".into()),
       },
       context,
@@ -151,11 +157,16 @@ struct Fixture {
 
 impl Fixture {
   fn new(mutate_on_call: Option<usize>) -> Self {
+    Self::configured(mutate_on_call, false)
+  }
+
+  fn configured(mutate_on_call: Option<usize>, mutate_view: bool) -> Self {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().to_path_buf();
     let runner = Arc::new(RecordingRunner {
       mutate_project: mutate_on_call.map(|_| root.clone()),
       mutate_on_call,
+      mutate_view,
       ..RecordingRunner::default()
     });
     let tenet = Tenet::new(root.clone(), Arc::new(LocalWorkspace), runner.clone());
@@ -391,6 +402,69 @@ fn requirement_check_is_development_only_and_verify_reruns_every_verifier() {
   assert!(evaluation.runs.iter().all(|run| {
     run.authority == verified.authority_id && run.candidate == verified.candidate_id
   }));
+}
+
+#[test]
+fn mutated_verifier_view_cannot_contribute_to_done() {
+  let fixture = Fixture::configured(None, true);
+  fixture.admit();
+  let result = fixture.tenet.verify().unwrap();
+  assert_eq!(result.verdict, Verdict::InfrastructureError);
+  assert!(
+    result.result.requirements[0].criteria.iter().all(
+      |criterion| criterion.state == tenet_domain::algebra::CriterionState::InfrastructureError
+    )
+  );
+}
+
+#[test]
+fn final_evaluation_receipt_detects_tampering() {
+  let fixture = Fixture::new(None);
+  fixture.admit();
+  let verified = fixture.tenet.verify().unwrap();
+  let receipt = fixture
+    .tenet
+    .receipt_verify(&verified.evaluation_id)
+    .unwrap();
+  assert_eq!(receipt.verdict, Verdict::Done);
+
+  let object = fixture
+    .root()
+    .join(".tenet/objects")
+    .join(&verified.evaluation_id.0.0[7..]);
+  fs::write(object, b"{}").unwrap();
+  assert_eq!(
+    fixture
+      .tenet
+      .receipt_verify(&verified.evaluation_id)
+      .unwrap_err()
+      .code,
+    "content_integrity_failure"
+  );
+}
+
+#[test]
+fn receipt_verification_is_available_to_non_mcp_process_callers() {
+  let fixture = Fixture::new(None);
+  fixture.admit();
+  let verified = fixture.tenet.verify().unwrap();
+  let output = ProcessCommand::new(env!("CARGO_BIN_EXE_tenet"))
+    .arg("--cwd")
+    .arg(fixture.root())
+    .arg("doctor")
+    .arg("--receipt")
+    .arg(&verified.evaluation_id.0.0)
+    .arg("--json")
+    .output()
+    .unwrap();
+  assert!(
+    output.status.success(),
+    "{}",
+    String::from_utf8_lossy(&output.stderr)
+  );
+  let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+  assert_eq!(receipt["receiptId"], verified.evaluation_id.0.0);
+  assert_eq!(receipt["verdict"], "DONE");
 }
 
 #[test]

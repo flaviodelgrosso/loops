@@ -25,6 +25,9 @@ pub enum Command {
   },
   /// Validate repository, semantic, integrity, and integration invariants.
   Doctor {
+    /// Verify a canonical Final Evaluation receipt by content identity.
+    #[arg(long, value_name = "EVALUATION_ID")]
+    receipt: Option<String>,
     #[arg(long)]
     json: bool,
   },
@@ -38,7 +41,7 @@ impl Command {
   pub(crate) fn json_requested(&self) -> bool {
     matches!(
       self,
-      Self::Init { json: true, .. } | Self::Doctor { json: true }
+      Self::Init { json: true, .. } | Self::Doctor { json: true, .. }
     )
   }
 }

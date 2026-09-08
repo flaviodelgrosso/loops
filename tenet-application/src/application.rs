@@ -44,7 +44,7 @@ use crate::{
   },
   response::{
     AuthoritySubmissionResult, ContextResult, DoctorCheck, DoctorResult, InitResult,
-    RequirementCheckResult, RequirementStatus, TenetError, VerifyResult,
+    ReceiptVerificationResult, RequirementCheckResult, RequirementStatus, TenetError, VerifyResult,
   },
 };
 
@@ -107,6 +107,7 @@ struct LoadedAuthority {
   spec: SpecSnapshot,
   policy: VerificationPolicy,
   contract: CompletionContractV1,
+  surface_entries: Vec<tenet_domain::snapshot::TreeEntry>,
 }
 
 struct LoadedAdmission {
@@ -236,6 +237,14 @@ impl Tenet {
       let root = self.initialized_root()?;
       let _lock = self.repository.acquire_lock(&root)?;
       self.verify_inner()
+    })())
+  }
+
+  pub fn receipt_verify(&self, receipt_id: &EvaluationId) -> AppResult<ReceiptVerificationResult> {
+    app_result((|| {
+      let root = self.initialized_root()?;
+      let _lock = self.repository.acquire_lock(&root)?;
+      self.receipt_verify_inner(receipt_id)
     })())
   }
 
@@ -598,6 +607,8 @@ impl Tenet {
             report: &report,
             authority: &loaded.authority,
             spec: &loaded.spec,
+            policy: &loaded.policy,
+            surface_entries: &loaded.surface_entries,
           },
         )?;
         let admission_id = AdmissionId(self.store_value(&root, &admission)?);
@@ -643,6 +654,7 @@ impl Tenet {
       authority_id: chain.admission.authority,
       candidate_id,
       evaluation_id,
+      evaluation,
       result,
     })
   }
@@ -685,7 +697,57 @@ impl Tenet {
       verdict,
       result,
       reason,
+      evaluation,
       current_candidate_id,
+    })
+  }
+
+  fn receipt_verify_inner(&self, receipt_id: &EvaluationId) -> Result<ReceiptVerificationResult> {
+    let root = self.initialized_root()?;
+    let evaluation: Evaluation = self.load_object(&root, &receipt_id.0)?;
+    if !matches!(evaluation.scope, EvaluationScope::Final) {
+      return Err(
+        TenetError::new(
+          "receipt_not_final",
+          "receipt must identify a Final Evaluation",
+        )
+        .into(),
+      );
+    }
+    let chain = self.load_admission(&root, &evaluation.admission)?;
+    self.repository.manifest(&root, &evaluation.candidate.0)?;
+    let result = evaluate(
+      &chain.loaded.contract,
+      &chain.as_kernel_chain(),
+      &evaluation,
+    )?;
+    if result.verdict != Some(Verdict::Done) {
+      return Err(
+        TenetError::new(
+          "receipt_not_complete",
+          "Final Evaluation did not derive DONE",
+        )
+        .into(),
+      );
+    }
+    let evidence_set_digest = ContentObjectId(canonical_digest(&evaluation.runs)?);
+    let mut verification_environment_ids = evaluation
+      .runs
+      .iter()
+      .map(|run| run.provenance.execution_environment_identity.clone())
+      .collect::<Vec<_>>();
+    verification_environment_ids.sort_by(|left, right| left.0.cmp(&right.0));
+    verification_environment_ids.dedup();
+    Ok(ReceiptVerificationResult {
+      schema_version: 1,
+      receipt_id: receipt_id.clone(),
+      authority_id: evaluation.authority,
+      candidate_id: evaluation.candidate,
+      contract_digest: chain.loaded.authority.contract,
+      completion_policy_id: chain.loaded.contract.policy,
+      evidence_set_digest,
+      verification_environment_ids,
+      verdict: Verdict::Done,
     })
   }
 
@@ -872,16 +934,18 @@ impl Tenet {
         .iter()
         .find(|verifier| verifier.id == verifier_id)
         .with_context(|| format!("configured verifier `{verifier_id}` disappeared"))?;
-      let run = self
-        .execute_configured_verifier(root, chain, &candidate_id, verifier)
-        .unwrap_or_else(|error| {
-          infrastructure_run(
-            chain.admission.authority.clone(),
-            candidate_id.clone(),
-            verifier.id.clone(),
-            error.to_string(),
-          )
-        });
+      let run = match self.execute_configured_verifier(root, chain, &candidate_id, verifier) {
+        Ok(run) => run,
+        Err(error) => infrastructure_run(
+          chain.id.clone(),
+          chain.admission.authority.clone(),
+          chain.loaded.authority.contract.clone(),
+          chain.loaded.contract.policy.clone(),
+          candidate_id.clone(),
+          verifier,
+          error.to_string(),
+        )?,
+      };
       runs.push(run);
     }
     Ok(Evaluation {
@@ -947,9 +1011,30 @@ impl Tenet {
       candidate_id,
       oracle_identity: &identity,
     })?;
-    validate_executed_verifier(verifier, &executed)?;
+    validate_executed_verifier(verifier, &identity, &executed)?;
+    let candidate_include = ["**".to_owned()];
+    let observed_candidate =
+      self
+        .repository
+        .capture_selected(root, candidate.path(), &candidate_include, &[])?;
+    let observed_authority = self.repository.capture(root, authority_view.path())?;
+    if observed_candidate != candidate_id.0 || observed_authority != chain.loaded.authority.surface
+    {
+      return infrastructure_run(
+        chain.id.clone(),
+        chain.admission.authority.clone(),
+        chain.loaded.authority.contract.clone(),
+        chain.loaded.contract.policy.clone(),
+        candidate_id.clone(),
+        verifier,
+        "verifier mutated its immutable Candidate or Authority view".into(),
+      );
+    }
     Ok(executed.domain_run(
+      chain.id.clone(),
       chain.admission.authority.clone(),
+      chain.loaded.authority.contract.clone(),
+      chain.loaded.contract.policy.clone(),
       candidate_id.clone(),
       verifier.id.clone(),
     ))
@@ -1059,6 +1144,10 @@ impl Tenet {
         .read_ref(root, ACTIVE_ADMISSION_REF)?
         .ok_or_else(|| TenetError::new("admission_missing", "no active admission"))?,
     );
+    self.load_admission(root, &id)
+  }
+
+  fn load_admission(&self, root: &Path, id: &AdmissionId) -> Result<LoadedAdmission> {
     let admission: Admission = self.load_object(root, &id.0)?;
     let (proposal, loaded) = self.load_proposed(root, &admission.proposal)?;
     let report: ReconciliationReport = self.load_object(root, &admission.reconciliation.0)?;
@@ -1077,10 +1166,12 @@ impl Tenet {
         report: &report,
         authority: &loaded.authority,
         spec: &loaded.spec,
+        policy: &loaded.policy,
+        surface_entries: &loaded.surface_entries,
       },
     )?;
     Ok(LoadedAdmission {
-      id,
+      id: id.clone(),
       admission,
       proposal,
       report,
@@ -1105,6 +1196,7 @@ impl Tenet {
     let surface = self.repository.materialize(root, &authority.surface)?;
     let policy = self.repository.load_policy(surface.path())?;
     validate_candidate_surface(&policy.candidate)?;
+    let surface_entries = self.repository.manifest(root, &authority.surface)?.entries;
     self.validate_authority_sources(surface.path(), &policy)?;
     let path =
       self
@@ -1138,6 +1230,7 @@ impl Tenet {
         spec,
         policy,
         contract,
+        surface_entries,
       },
     ))
   }
@@ -1204,6 +1297,8 @@ impl LoadedAdmission {
       report: &self.report,
       authority: &self.loaded.authority,
       spec: &self.loaded.spec,
+      policy: &self.loaded.policy,
+      surface_entries: &self.loaded.surface_entries,
     }
   }
 }
@@ -1234,7 +1329,11 @@ fn scoped_verifier_ids(
   )
 }
 
-fn validate_executed_verifier(verifier: &VerifierSpec, executed: &ExecutedVerifier) -> Result<()> {
+fn validate_executed_verifier(
+  verifier: &VerifierSpec,
+  oracle_identity: &OracleIdentity,
+  executed: &ExecutedVerifier,
+) -> Result<()> {
   let expected = verifier.command.result.interpret(
     executed.observation.exit_code,
     executed.observation.timed_out,
@@ -1250,6 +1349,7 @@ fn validate_executed_verifier(verifier: &VerifierSpec, executed: &ExecutedVerifi
     || executed.execution.platform != executed.context.platform
     || executed.execution.resolved_program != executed.context.resolved_program
     || executed.execution.resolved_program_digest != executed.context.resolved_program_digest
+    || executed.execution.oracle_identity != *oracle_identity
     || executed.execution.runner_identity.0.trim().is_empty()
     || executed
       .execution
@@ -1264,21 +1364,32 @@ fn validate_executed_verifier(verifier: &VerifierSpec, executed: &ExecutedVerifi
 }
 
 fn infrastructure_run(
+  admission: AdmissionId,
   authority: AuthorityId,
+  contract: ContentObjectId,
+  completion_policy: tenet_domain::algebra::CompletionPolicyId,
   candidate: CandidateId,
-  verifier: String,
+  verifier: &VerifierSpec,
   message: String,
-) -> tenet_domain::algebra::VerifierRun {
+) -> Result<tenet_domain::algebra::VerifierRun> {
   let platform = PlatformInformation {
     os: std::env::consts::OS.into(),
     architecture: std::env::consts::ARCH.into(),
   };
-  let execution_environment_identity =
-    ExecutionEnvironmentIdentity(bytes_digest(format!("{verifier}:{message}").as_bytes()));
-  tenet_domain::algebra::VerifierRun {
+  let execution_environment_identity = ExecutionEnvironmentIdentity(bytes_digest(
+    format!("{}:{message}", verifier.id).as_bytes(),
+  ));
+  let oracle_identity = OracleIdentity::Unavailable {
+    verifier_id: verifier.id.clone(),
+    definition_digest: canonical_digest(verifier)?,
+  };
+  Ok(tenet_domain::algebra::VerifierRun {
+    admission,
     authority,
+    contract,
+    completion_policy,
     candidate,
-    verifier: VerifierId(verifier),
+    verifier: VerifierId(verifier.id.clone()),
     observation: ExecutionObservation {
       result: EvidenceResult::InfrastructureError,
       exit_code: None,
@@ -1300,9 +1411,10 @@ fn infrastructure_run(
       platform,
       resolved_program: None,
       resolved_program_digest: None,
+      oracle_identity,
       execution_environment_identity,
     },
-  }
+  })
 }
 
 fn requirement_ref_name(requirement: &RequirementId) -> Result<String> {

@@ -9,6 +9,7 @@ use tenet_application::{
   application::{InitializeRequest, Tenet},
   response::{ErrorResult, TenetError},
 };
+use tenet_domain::{algebra::EvaluationId, evidence::ContentObjectId};
 
 use crate::cli::{Cli, Command};
 
@@ -44,7 +45,20 @@ fn run_command(cli: Cli) -> Result<()> {
       }
       Ok(())
     }
-    Command::Doctor { json } => {
+    Command::Doctor { json, receipt } => {
+      if let Some(receipt) = receipt {
+        let receipt = EvaluationId(ContentObjectId::new(receipt).map_err(anyhow::Error::msg)?);
+        let result = tenet.receipt_verify(&receipt)?;
+        if json {
+          println!("{}", serde_json::to_string_pretty(&result)?);
+        } else {
+          println!("verified receipt: {}", result.receipt_id.0.0);
+          println!("authority: {}", result.authority_id.0.0);
+          println!("candidate: {}", result.candidate_id.0.0);
+          println!("verdict: {:?}", result.verdict);
+        }
+        return Ok(());
+      }
       let result = tenet.doctor()?;
       if json {
         println!("{}", serde_json::to_string_pretty(&result)?);

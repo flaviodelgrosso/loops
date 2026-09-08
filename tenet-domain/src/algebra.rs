@@ -141,7 +141,10 @@ pub struct ExecutionContext {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VerifierRun {
+  pub admission: AdmissionId,
   pub authority: AuthorityId,
+  pub contract: ContentObjectId,
+  pub completion_policy: CompletionPolicyId,
   pub candidate: CandidateId,
   pub verifier: VerifierId,
   pub observation: ExecutionObservation,
@@ -201,12 +204,29 @@ pub enum CompletionState {
   Inconclusive,
   InfrastructureError,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceDisposition {
+  Observed,
+  Missing,
+  RejectedAssurance,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvidenceEvaluation {
+  pub verifier: VerifierId,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub result: Option<EvidenceResult>,
+  pub disposition: EvidenceDisposition,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CriterionEvaluation {
   pub criterion: CriterionId,
   pub state: CriterionState,
+  pub evidence: Vec<EvidenceEvaluation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -258,10 +278,22 @@ pub enum AlgebraError {
   AdmissionMismatch,
   #[error("evaluation authority does not match the admitted authority")]
   AuthorityMismatch,
+  #[error("verifier run is bound to the wrong admission")]
+  RunAdmissionMismatch,
+  #[error("verifier run is bound to the wrong completion contract")]
+  RunContractMismatch,
+  #[error("verifier run is bound to the wrong completion policy")]
+  RunCompletionPolicyMismatch,
   #[error("verifier run is bound to the wrong authority")]
   RunAuthorityMismatch,
   #[error("verifier run is bound to the wrong candidate")]
   RunCandidateMismatch,
+  #[error("verifier run context and provenance disagree")]
+  RunProvenanceMismatch,
+  #[error("verifier run oracle identity does not match its admitted subject")]
+  RunOracleMismatch,
+  #[error("admitted verifier definition is missing or inconsistent with the contract")]
+  AdmittedVerifierMismatch,
   #[error("verifier `{0}` is outside the evaluation scope")]
   VerifierOutsideScope(String),
   #[error("verifier `{0}` has more than one run")]

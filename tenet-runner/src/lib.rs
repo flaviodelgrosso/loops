@@ -10,6 +10,7 @@ use std::{
   io::Read,
   path::{Component, Path, PathBuf},
   process::{Command, Stdio},
+  sync::mpsc,
   thread,
   time::{Duration, Instant},
 };
@@ -115,8 +116,14 @@ impl VerifierRunner for LocalProcessRunner {
     let stdout = child.stdout.take().context("capture verifier stdout")?;
     let stderr = child.stderr.take().context("capture verifier stderr")?;
     let limit = request.verifier.max_output_bytes;
-    let stdout_reader = thread::spawn(move || read_bounded(stdout, limit));
-    let stderr_reader = thread::spawn(move || read_bounded(stderr, limit));
+    let (stdout_sender, stdout_receiver) = mpsc::channel();
+    let (stderr_sender, stderr_receiver) = mpsc::channel();
+    thread::spawn(move || {
+      let _ = stdout_sender.send(read_bounded(stdout, limit));
+    });
+    thread::spawn(move || {
+      let _ = stderr_sender.send(read_bounded(stderr, limit));
+    });
 
     let deadline = Instant::now()
       .checked_add(Duration::from_millis(request.verifier.command.timeout_ms))
@@ -131,13 +138,13 @@ impl VerifierRunner for LocalProcessRunner {
       }
       thread::sleep(Duration::from_millis(10));
     };
+    #[cfg(unix)]
+    terminate(&mut child).context("terminate verifier descendants")?;
+    drop(child);
 
-    let stdout = stdout_reader
-      .join()
-      .map_err(|_| anyhow::anyhow!("verifier stdout reader panicked"))??;
-    let stderr = stderr_reader
-      .join()
-      .map_err(|_| anyhow::anyhow!("verifier stderr reader panicked"))??;
+    let drain_deadline = Instant::now() + Duration::from_secs(5);
+    let stdout = collect_output(&stdout_receiver, drain_deadline)?;
+    let stderr = collect_output(&stderr_receiver, drain_deadline)?;
     let exit_code = status.code();
     let result = request
       .verifier
@@ -349,6 +356,7 @@ fn provenance(
     platform: context.platform.clone(),
     resolved_program: context.resolved_program.clone(),
     resolved_program_digest: context.resolved_program_digest.clone(),
+    oracle_identity: request.oracle_identity.clone(),
     execution_environment_identity: ExecutionEnvironmentIdentity(identity),
   })
 }
@@ -461,9 +469,26 @@ fn read_bounded(mut reader: impl Read, limit: usize) -> Result<String> {
   Ok(String::from_utf8_lossy(&kept).into_owned())
 }
 
+fn collect_output(receiver: &mpsc::Receiver<Result<String>>, deadline: Instant) -> Result<String> {
+  let timeout = deadline.saturating_duration_since(Instant::now());
+  match receiver.recv_timeout(timeout) {
+    Ok(result) => result.map_err(|error| anyhow::anyhow!("read verifier output: {error}")),
+    Err(mpsc::RecvTimeoutError::Timeout) => Err(anyhow::anyhow!(
+      "verifier descendants retained an output pipe"
+    )),
+    Err(mpsc::RecvTimeoutError::Disconnected) => {
+      Err(anyhow::anyhow!("verifier output reader panicked"))
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
-  use std::{collections::BTreeSet, fs};
+  use std::{
+    collections::BTreeSet,
+    fs,
+    time::{Duration, Instant},
+  };
 
   use tenet_application::ports::{VerifierRun, VerifierRunner};
   use tenet_domain::{
@@ -557,6 +582,15 @@ mod tests {
     assert_eq!(executed.observation.exit_code, None);
   }
 
+  #[cfg(unix)]
+  #[test]
+  fn verifier_descendants_cannot_outlive_the_observed_process() {
+    let started = Instant::now();
+    let executed = execute_script(Some("#!/bin/sh\nsleep 5 &\nexit 0\n"), 1_000);
+    assert_eq!(executed.result, EvidenceResult::Pass);
+    assert!(started.elapsed() < Duration::from_secs(2));
+  }
+
   use super::{LocalProcessRunner, inherited_environment_digests};
 
   fn content(byte: char) -> ContentObjectId {
@@ -609,6 +643,17 @@ mod tests {
     let first = execute_script(Some("#!/bin/sh\nexit 0\n"), 1_000);
     let second = execute_script(Some("#!/bin/sh\nexit 0\n"), 1_000);
     assert_eq!(
+      first.execution.execution_environment_identity,
+      second.execution.execution_environment_identity
+    );
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn executable_bytes_change_the_execution_identity() {
+    let first = execute_script(Some("#!/bin/sh\nexit 0\n"), 1_000);
+    let second = execute_script(Some("#!/bin/sh\n# materially changed\nexit 0\n"), 1_000);
+    assert_ne!(
       first.execution.execution_environment_identity,
       second.execution.execution_environment_identity
     );

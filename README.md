@@ -10,12 +10,12 @@ Tenet persists immutable objects and derives workflow and completion state. Agen
 
 ```text
 tenet init [--spec PATH] [--json]
-tenet doctor [--json]
+tenet doctor [--receipt EVALUATION_ID] [--json]
 tenet mcp
 tenet version
 ```
 
-`tenet init` creates repository-contained state, a starter `SPEC.md` when needed, MCP configuration, and the Tenet Skill. `tenet doctor` validates repository root discovery, `SPEC.md`, repository format, object/blob/ref integrity, the active Admission chain, supported semantic versions, repository-write scope, and integration consistency.
+`tenet init` creates repository-contained state, a starter `SPEC.md` when needed, MCP configuration, and the Tenet Skill. `tenet doctor` validates repository root discovery, `SPEC.md`, repository format, object/blob/ref integrity, the active Admission chain, supported semantic versions, repository-write scope, and integration consistency. `tenet doctor --receipt <EvaluationId> --json` verifies a canonical Final Evaluation receipt and its referenced Admission, Authority, Candidate, contract, policy, evidence set, and execution-environment identities.
 
 ## Four-operation protocol
 
@@ -86,11 +86,14 @@ Final verification:
 1. loads the exact active Admission and Authority;
 2. requires supported `CompletionPolicyV1` and Runner/Candidate semantics;
 3. captures `Cfinal` once;
-4. reruns every required verifier, each against a fresh materialization of `Cfinal`;
-5. persists one Final Evaluation containing the exact subject-bound run set;
-6. derives all Criteria, Requirements, and the Authority outcome in the kernel.
+4. gives every verifier a fresh materialization of `Cfinal` and a fresh scratch directory;
+5. terminates the verifier process group and rejects a run if its Candidate or Authority materialization changed;
+6. persists one Final Evaluation containing the exact Admission, Authority, Candidate, contract, completion-policy, verifier, oracle, execution, and result bindings;
+7. derives every evidence disposition, Criterion, Requirement, and Authority outcome in the kernel.
 
-Only `tenet_verify` can return `DONE`. A successful response identifies `AdmissionId`, `AuthorityId`, `CandidateId`, and `EvaluationId`. The successful Final `EvaluationId` is the `LOCAL_V1` receipt identity; there is no separate receipt object.
+Only `tenet_verify` can return `DONE`. Its response includes the complete persisted Evaluation and deterministic per-verifier dispositions (`observed`, `missing`, or `rejected_assurance`). A successful Final `EvaluationId` is the canonical `LOCAL_V1` receipt identity; there is no competing receipt object. Verify it later with `tenet doctor --receipt <EvaluationId> --json`. The receipt response includes the Authority, Candidate, contract digest, completion-policy identity, evidence-set digest, and execution-environment identities.
+
+Receipt verification re-derives every run result from the admitted verifier definition's exit-code policy, recomputes each verifier definition digest, and compares Authority-bundle oracle references against the immutable sealed surface manifest. A newly serialized Evaluation containing a contradictory `result` or fabricated oracle reference is rejected rather than accepted because it is content-addressed.
 
 After a successful Evaluation for `C1`, Tenet captures the working tree again. If it is now `C2`, Tenet preserves the successful historical Evaluation for `C1` but returns `INCONCLUSIVE`, reason `CANDIDATE_CHANGED_DURING_VERIFICATION`, and both Candidate identities. Evidence for `C1` is never implied to cover `C2`.
 
@@ -118,9 +121,9 @@ Objects and blobs are addressed by SHA-256 content identity. Refs are mutable na
 
 ## Completion and evidence policy
 
-`CompletionPolicyV1` requires the exact verifier set for the Evaluation scope. Every run binds exact Admission-derived Authority and Candidate subjects. Duplicate, missing, extra, cross-Authority, and cross-Candidate runs are rejected. Assurance and evidence-control requirements participate in every Criterion result. Candidate-controlled verification is admissible only when the Authority contract explicitly permits it.
+`CompletionPolicyV1` requires the exact verifier set for the Evaluation scope. Every run binds the exact Admission, Authority, Candidate, contract digest, completion-policy identity, verifier, and typed oracle identity. The kernel rejects duplicate, missing, extra, cross-Admission, cross-Authority, cross-Candidate, cross-contract, cross-policy, oracle-mismatched, and internally inconsistent provenance. Assurance and evidence-control requirements participate in every Criterion result. Candidate-controlled verification is admissible only when the Authority contract explicitly permits it.
 
-The local runner uses structured argv, typed Candidate/Authority/scratch paths, explicit environment inheritance, timeouts, bounded output, `RunnerSemanticsV1`, and `LOCAL_V1`. It invokes no implicit shell.
+The local runner uses structured argv, typed Candidate/Authority/scratch paths, explicit environment inheritance, timeouts, bounded output, `RunnerSemanticsV1`, and `LOCAL_V1`. It invokes no implicit shell. Its environment identity covers the resolved executable digest, admitted command, effective inherited environment digests, typed oracle identity, Tenet subjects, runner version, OS, and architecture. It terminates the verifier process group before accepting output.
 
 ## Trust boundaries
 
@@ -132,6 +135,16 @@ These distinctions are mandatory:
 - **content addressing ≠ writer authentication.** A digest identifies bytes; it does not authenticate their producer.
 - **MCP user input ≠ cryptographic human identity.** Admission is an explicit workflow boundary, not a signature scheme.
 - **verifier `Pass` ≠ task completion.** Only deterministic kernel evaluation of the full admitted Final Evaluation can yield `DONE`.
+
+## Residual limitations
+
+- **Admission authorization is not independent.** The current `ADMISSION` operation validates exact Proposal/Reconciliation/Authority bindings, but any process with protocol access can submit a consistent chain. Repository-contained digests authenticate bytes, not writers. A non-cooperative producer therefore can still self-admit or replace the active Authority. Fixing this requires a durable external trust anchor; signatures, HMACs, keychains, and privileged services are intentionally outside the current product boundary.
+- **`LOCAL_V1` is detection, not confinement.** Fresh materializations, process-group cleanup, per-view recapture, and final working-tree recapture detect ordinary mutation and prevent sequential contamination. A hostile same-user process can still race or tamper with local files. Such evidence cannot satisfy `Protected` criteria.
+- **The canonical process surface is intentionally limited.** The initial CLI remains `init`, `doctor`, `mcp`, and `version`; completion lifecycle operations are exposed only through the four-operation MCP adapter. Receipt verification is available without MCP through `doctor --receipt`, but a complete non-MCP lifecycle interface is not yet present.
+
+- **Descendants can escape process-group cleanup.** Tenet places verifiers in a dedicated group and sends `SIGKILL` to that group, but a descendant that starts a new session can retain an inherited output pipe. Output collection now fails closed after a five-second drain deadline; the surviving process itself is outside the same-user local assurance boundary.
+
+Because of the first and second limitations, Tenet does not currently support the stronger claim that admission and authoritative verification are independent of a same-user non-cooperative candidate producer.
 
 ## Architecture
 

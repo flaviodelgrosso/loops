@@ -4,7 +4,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tenet_domain::{
   algebra::{
-    CompletionContractV1, CompletionEvaluation, CompletionPolicyId, CompletionState, EvaluationId,
+    CompletionContractV1, CompletionEvaluation, CompletionPolicyId, CompletionState, Evaluation,
+    EvaluationId,
   },
   authority::{
     Admission, AdmissionId, AuthorityProposal, Clarification, ClarificationId, ProposalId,
@@ -12,7 +13,7 @@ use tenet_domain::{
   },
   completion::Verdict,
   contract::RequirementId,
-  evidence::{AuthorityId, CandidateId},
+  evidence::{AuthorityId, CandidateId, ContentObjectId, ExecutionEnvironmentIdentity},
   protocol::WorkflowPhase,
 };
 
@@ -138,6 +139,7 @@ pub struct RequirementCheckResult {
   pub authority_id: AuthorityId,
   pub candidate_id: CandidateId,
   pub evaluation_id: EvaluationId,
+  pub evaluation: Evaluation,
   pub result: CompletionEvaluation,
 }
 
@@ -149,12 +151,27 @@ pub struct VerifyResult {
   pub authority_id: AuthorityId,
   pub candidate_id: CandidateId,
   pub evaluation_id: EvaluationId,
+  pub evaluation: Evaluation,
   pub verdict: Verdict,
   pub result: CompletionEvaluation,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub reason: Option<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub current_candidate_id: Option<CandidateId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReceiptVerificationResult {
+  pub schema_version: u32,
+  pub receipt_id: EvaluationId,
+  pub authority_id: AuthorityId,
+  pub candidate_id: CandidateId,
+  pub contract_digest: ContentObjectId,
+  pub completion_policy_id: CompletionPolicyId,
+  pub evidence_set_digest: ContentObjectId,
+  pub verification_environment_ids: Vec<ExecutionEnvironmentIdentity>,
+  pub verdict: Verdict,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

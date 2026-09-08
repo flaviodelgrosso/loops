@@ -64,6 +64,10 @@ pub enum OracleIdentity {
     executable_content_id: ContentObjectId,
     definition_digest: String,
   },
+  Unavailable {
+    verifier_id: String,
+    definition_digest: String,
+  },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -86,6 +90,7 @@ pub struct ExecutionProvenance {
   pub resolved_program: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub resolved_program_digest: Option<String>,
+  pub oracle_identity: OracleIdentity,
   pub execution_environment_identity: ExecutionEnvironmentIdentity,
 }
 

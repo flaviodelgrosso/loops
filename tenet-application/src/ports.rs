@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use tenet_domain::{
   algebra::{
-    CompletionContractV1, EvidenceResult, ExecutionContext, ExecutionObservation, VerifierId,
-    VerifierRun as DomainVerifierRun,
+    CompletionContractV1, CompletionPolicyId, EvidenceResult, ExecutionContext,
+    ExecutionObservation, VerifierId, VerifierRun as DomainVerifierRun,
   },
+  authority::AdmissionId,
   evidence::{
     AuthorityId, CandidateId, ContentObjectId, ExecutionProvenance, OracleIdentity,
     VerifierObservation,
@@ -170,12 +171,18 @@ pub struct ExecutedVerifier {
 impl ExecutedVerifier {
   pub fn domain_run(
     &self,
+    admission: AdmissionId,
     authority: AuthorityId,
+    contract: ContentObjectId,
+    completion_policy: CompletionPolicyId,
     candidate: CandidateId,
     verifier: impl Into<String>,
   ) -> DomainVerifierRun {
     DomainVerifierRun {
+      admission,
       authority,
+      contract,
+      completion_policy,
       candidate,
       verifier: VerifierId(verifier.into()),
       observation: ExecutionObservation {

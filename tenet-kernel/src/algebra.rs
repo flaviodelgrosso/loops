@@ -7,16 +7,21 @@ use tenet_domain::{
     AlgebraError, AssuranceProfileId, AssuranceRequirementV1, COMPLETION_POLICY_V1,
     CompletionContractV1, CompletionEvaluation, CompletionPolicyId, CompletionState,
     CriterionEvaluation, CriterionState, Evaluation, EvaluationScope, EvidenceControl,
-    EvidenceControlRequirementV1, EvidenceResult, LOCAL_V1, PROTECTED_V1, RUNNER_SEMANTICS_V1,
-    RequirementEvaluation, VerifierRun,
+    EvidenceControlRequirementV1, EvidenceDisposition, EvidenceEvaluation, EvidenceResult,
+    LOCAL_V1, PROTECTED_V1, RUNNER_SEMANTICS_V1, RequirementEvaluation, Verifier, VerifierMaterial,
+    VerifierRun,
   },
   authority::{Admission, Authority, AuthorityProposal, ReconciliationReport, SpecSnapshot},
   completion::Verdict,
+  evidence::OracleIdentity,
+  policy::{VerificationPolicy, VerifierAuthority, VerifierSpec},
+  snapshot::TreeEntry,
 };
 
 use crate::{
   authority::{admission_id, authority_id, validate_admission},
   digest::canonical_digest,
+  identity::{sealed_executable_content_id, subtree_content_id},
 };
 
 pub struct AdmissionChain<'a> {
@@ -25,6 +30,8 @@ pub struct AdmissionChain<'a> {
   pub report: &'a ReconciliationReport,
   pub authority: &'a Authority,
   pub spec: &'a SpecSnapshot,
+  pub policy: &'a VerificationPolicy,
+  pub surface_entries: &'a [TreeEntry],
 }
 
 pub fn validate_contract(contract: &CompletionContractV1) -> Result<(), AlgebraError> {
@@ -116,15 +123,17 @@ pub fn validate_completion_admission(
 
 pub fn evidence_result(
   observation: &tenet_domain::algebra::ExecutionObservation,
+  definition: &VerifierSpec,
 ) -> EvidenceResult {
-  if observation.infrastructure_error.is_some()
-    || observation.timed_out
-    || observation.exit_code.is_none()
-  {
-    EvidenceResult::InfrastructureError
-  } else {
-    observation.result
+  if observation.infrastructure_error.is_some() {
+    return EvidenceResult::InfrastructureError;
   }
+  let derived =
+    definition
+      .command
+      .result
+      .interpret(observation.exit_code, observation.timed_out, false);
+  derived
 }
 
 pub fn evaluate(
@@ -145,12 +154,12 @@ pub fn evaluate(
   for requirement in &requirements {
     for criterion in &requirement.criteria {
       for verifier in &criterion.verifiers {
-        expected.insert(verifier.id.clone(), criterion);
+        admitted_definition(chain, verifier)?;
+        expected.insert(verifier.id.clone(), verifier);
       }
     }
   }
-
-  let runs = validate_runs(evaluation, &expected)?;
+  let runs = validate_runs(contract, chain, evaluation, &expected)?;
   let mut requirement_results = Vec::with_capacity(requirements.len());
   for requirement in requirements {
     let mut criteria = Vec::with_capacity(requirement.criteria.len());
@@ -160,14 +169,33 @@ pub fn evaluate(
       let mut saw_missing = false;
       let mut saw_inadmissible = false;
       let mut saw_inconclusive = false;
+      let mut evidence = Vec::with_capacity(criterion.verifiers.len());
       for verifier in &criterion.verifiers {
+        let definition = admitted_definition(chain, verifier)?;
         let Some(run) = runs.get(&verifier.id) else {
           saw_missing = true;
+          evidence.push(EvidenceEvaluation {
+            verifier: verifier.id.clone(),
+            result: None,
+            disposition: EvidenceDisposition::Missing,
+          });
           continue;
         };
         let assurance_admissible =
           assurance_satisfies(&run.context.assurance, criterion.evidence.assurance)?;
-        match evidence_result(&run.observation) {
+        let result = evidence_result(&run.observation, definition);
+        evidence.push(EvidenceEvaluation {
+          verifier: verifier.id.clone(),
+          result: Some(result),
+          disposition: if matches!(result, EvidenceResult::Pass | EvidenceResult::Inconclusive)
+            && !assurance_admissible
+          {
+            EvidenceDisposition::RejectedAssurance
+          } else {
+            EvidenceDisposition::Observed
+          },
+        });
+        match result {
           EvidenceResult::Fail => saw_failure = true,
           EvidenceResult::InfrastructureError => saw_infrastructure = true,
           EvidenceResult::Pass if !assurance_admissible => saw_inadmissible = true,
@@ -192,6 +220,7 @@ pub fn evaluate(
       criteria.push(CriterionEvaluation {
         criterion: criterion.id.clone(),
         state,
+        evidence,
       });
     }
     requirement_results.push(RequirementEvaluation {
@@ -223,6 +252,26 @@ pub fn evaluate(
     verdict,
   })
 }
+fn admitted_definition<'a>(
+  chain: &'a AdmissionChain<'_>,
+  verifier: &Verifier,
+) -> Result<&'a VerifierSpec, AlgebraError> {
+  let definition = chain
+    .policy
+    .verifiers
+    .iter()
+    .find(|definition| definition.id == verifier.id.0)
+    .ok_or_else(|| AlgebraError::AdmittedVerifierMismatch)?;
+  let matches_material = match (verifier.material, definition.authority) {
+    (VerifierMaterial::Candidate, VerifierAuthority::Project)
+    | (VerifierMaterial::AuthorityBundle, VerifierAuthority::AuthoritySnapshot) => true,
+    _ => false,
+  };
+  if !matches_material {
+    return Err(AlgebraError::AdmittedVerifierMismatch);
+  }
+  Ok(definition)
+}
 
 fn require_policy_v1(policy: &CompletionPolicyId) -> Result<(), AlgebraError> {
   if policy.0 == COMPLETION_POLICY_V1 {
@@ -248,13 +297,24 @@ fn scoped_requirements<'a>(
 }
 
 fn validate_runs<'a>(
+  contract: &CompletionContractV1,
+  chain: &AdmissionChain<'_>,
   evaluation: &'a Evaluation,
-  expected: &BTreeMap<tenet_domain::algebra::VerifierId, &tenet_domain::algebra::Criterion>,
+  expected: &BTreeMap<tenet_domain::algebra::VerifierId, &Verifier>,
 ) -> Result<BTreeMap<tenet_domain::algebra::VerifierId, &'a VerifierRun>, AlgebraError> {
   let mut runs = BTreeMap::new();
   for run in &evaluation.runs {
+    if run.admission != evaluation.admission {
+      return Err(AlgebraError::RunAdmissionMismatch);
+    }
     if run.authority != evaluation.authority {
       return Err(AlgebraError::RunAuthorityMismatch);
+    }
+    if run.contract != chain.authority.contract {
+      return Err(AlgebraError::RunContractMismatch);
+    }
+    if run.completion_policy != contract.policy {
+      return Err(AlgebraError::RunCompletionPolicyMismatch);
     }
     if run.candidate != evaluation.candidate {
       return Err(AlgebraError::RunCandidateMismatch);
@@ -264,14 +324,108 @@ fn validate_runs<'a>(
         run.context.runner_semantics.0.clone(),
       ));
     }
-    if !expected.contains_key(&run.verifier) {
-      return Err(AlgebraError::VerifierOutsideScope(run.verifier.0.clone()));
+    if run.context.assurance != run.provenance.assurance
+      || run.context.runner_semantics != run.provenance.runner_semantics
+      || run.context.platform != run.provenance.platform
+      || run.context.resolved_program != run.provenance.resolved_program
+      || run.context.resolved_program_digest != run.provenance.resolved_program_digest
+      || run.provenance.runner_identity.0.trim().is_empty()
+      || run.provenance.tenet_version.trim().is_empty()
+      || run
+        .provenance
+        .execution_environment_identity
+        .0
+        .trim()
+        .is_empty()
+    {
+      return Err(AlgebraError::RunProvenanceMismatch);
     }
+    let Some(expected_verifier) = expected.get(&run.verifier) else {
+      return Err(AlgebraError::VerifierOutsideScope(run.verifier.0.clone()));
+    };
+    let definition = admitted_definition(chain, expected_verifier)?;
+    validate_oracle_identity(run, definition, chain.surface_entries)?;
     if runs.insert(run.verifier.clone(), run).is_some() {
       return Err(AlgebraError::DuplicateRun(run.verifier.0.clone()));
     }
   }
   Ok(runs)
+}
+
+fn validate_oracle_identity(
+  run: &VerifierRun,
+  definition: &VerifierSpec,
+  surface_entries: &[TreeEntry],
+) -> Result<(), AlgebraError> {
+  let expected_definition =
+    canonical_digest(definition).map_err(|_| AlgebraError::RunOracleMismatch)?;
+  let derived_result = evidence_result(&run.observation, definition);
+  if run.observation.result != derived_result {
+    return Err(AlgebraError::RunProvenanceMismatch);
+  }
+  let valid = match (&run.provenance.oracle_identity, definition.authority) {
+    (
+      OracleIdentity::Project {
+        verifier_id,
+        candidate_id,
+        definition_digest,
+      },
+      VerifierAuthority::Project,
+    ) => {
+      verifier_id == &run.verifier.0
+        && candidate_id == &run.candidate
+        && definition_digest == &expected_definition
+    }
+    (
+      OracleIdentity::AuthoritySnapshot {
+        verifier_id,
+        authority_id,
+        bundle_path,
+        bundle_content_id,
+        executable_content_id,
+        definition_digest,
+      },
+      VerifierAuthority::AuthoritySnapshot,
+    ) => {
+      let Some(expected_bundle_path) = definition.oracle_path.as_deref() else {
+        return Err(AlgebraError::RunOracleMismatch);
+      };
+      let Some(expected_executable_path) = definition
+        .oracle_executable_path()
+        .and_then(|path| path.to_str().map(str::to_owned))
+      else {
+        return Err(AlgebraError::RunOracleMismatch);
+      };
+      let expected_bundle_content_id = subtree_content_id(surface_entries, expected_bundle_path)
+        .map_err(|_| AlgebraError::RunOracleMismatch)?;
+      let Some(expected_executable_content_id) =
+        sealed_executable_content_id(surface_entries, &expected_executable_path)
+      else {
+        return Err(AlgebraError::RunOracleMismatch);
+      };
+      verifier_id == &run.verifier.0
+        && authority_id == &run.authority
+        && bundle_path == expected_bundle_path
+        && bundle_content_id == &expected_bundle_content_id
+        && executable_content_id == &expected_executable_content_id
+        && definition_digest == &expected_definition
+    }
+    (
+      OracleIdentity::Unavailable {
+        verifier_id,
+        definition_digest,
+      },
+      _,
+    ) if derived_result == EvidenceResult::InfrastructureError => {
+      verifier_id == &run.verifier.0 && definition_digest == &expected_definition
+    }
+    _ => false,
+  };
+  if valid {
+    Ok(())
+  } else {
+    Err(AlgebraError::RunOracleMismatch)
+  }
 }
 
 fn assurance_satisfies(
